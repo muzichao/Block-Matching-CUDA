@@ -42,7 +42,7 @@ cmax   = bsxfun(@min, bsxfun(@plus, leftUpCol, searchRadius), M); % 搜索窗的列最
 for  i  =  1 : N1
     for  j  =  1 : M1        
         offInAllBlk   = (leftUpRow(i) - 1) * M + leftUpCol(j); % 当前中心块在所有块中的索引(行优先)
-        offInCentralBlk  = i * M1 + j; % 当前中心块在所有中心块中的索引(行优先)
+        offInCentralBlk  = (i-1) * M1 + j; % 当前中心块在所有中心块中的索引(行优先)
         
         idx   = I(rmin(i):rmax(i), cmin(j):cmax(j));  %在由[rmin:rmax, cmin:cmax]确定的搜索窗中搜索相似块
         idx = idx';
