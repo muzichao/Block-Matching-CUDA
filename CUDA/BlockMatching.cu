@@ -1,5 +1,6 @@
 #include "BlockMatching.h"
 #include "Parameter.h"
+#include <iostream>
 
 __constant__ int searchOffset[2][8] = { { -1, -1, -1, 0, 0, 1, 1, 1 }, { -1, 0, 1, -1, 1, -1, 0, 1 } }; // 搜索窗的偏移
 
@@ -38,7 +39,7 @@ __device__ void FindSimilarBlocks(int *posIdx_D, float *weiIdx_D, float wei, int
 		index--;
 	}
 
-	if (index == similarBlkNum - 1 && weiIdx_D[index] > wei)
+	if (index == similarBlkNum - 1 && weiIdx_D[index] >= wei)
 	{
 		index--;
 	}
@@ -58,6 +59,31 @@ __device__ void FindSimilarBlocks(int *posIdx_D, float *weiIdx_D, float wei, int
 	}
 }
 
+/**
+*输出：posIdx_D 相似块的位置
+* 输出：weiIdx_D 相似块的权重
+* 输入：rowNum 中心块的行数
+* 输入：colNum 中心块的列数
+*/
+__global__ void BM_Init_WeightAndPos(int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
+{
+	int x_id = blockDim.x * blockIdx.x + threadIdx.x; // 列坐标
+	int y_id = blockDim.y * blockIdx.y + threadIdx.y; // 行坐标
+
+	if (y_id < rowNum && x_id < colNum)
+	{
+		int offInCentralBlk = y_id * colNum + x_id; // 按行优先
+
+		float *weiIdx = &weiIdx_D[offInCentralBlk * similarBlkNum];
+		int *posIdx = &posIdx_D[offInCentralBlk * similarBlkNum];
+		for (int i = 0; i < similarBlkNum; i++)
+		{
+			weiIdx[i] = 2e30;
+			posIdx[i] = offInCentralBlk;
+		}
+	}
+}
+
 /*
 * 功能：计算搜索窗的坐标范围
 * 输入：blocks_D 提取的块，一行为一个块
@@ -67,12 +93,14 @@ __device__ void FindSimilarBlocks(int *posIdx_D, float *weiIdx_D, float wei, int
 * 输入：rmax_D 搜索窗的行最大坐标
 * 输入：cmin_D 搜索窗的列最小坐标
 * 输入：cmax_D 搜索窗的列最大坐标
+* 输入：blocksMean_D 每个块的均值
+* 输入：blocksVar_D 每个块的方差
 * 输出：posIdx_D 相似块的位置
 * 输出：weiIdx_D 相似块的权重
 * 输入：rowNum 中心块的行数
 * 输入：colNum 中心块的列数
 */
-__global__ void BlockMatching_R(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, int *rmin_D, int *rmax_D, int *cmin_D, int *cmax_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
+__global__ void BlockMatching_R(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, int *rmin_D, int *rmax_D, int *cmin_D, int *cmax_D, float *blocksMean_D, float *blocksVar_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
 {
 	int x_id = blockDim.x * blockIdx.x + threadIdx.x; // 列坐标
 	int y_id = blockDim.y * blockIdx.y + threadIdx.y; // 行坐标
@@ -92,10 +120,20 @@ __global__ void BlockMatching_R(float *blocks_D, int *leftUpRow_D, int *leftUpCo
 				int searchIdx = i * (imCol - blockR + 1) + j; // 按行优先
 				float *ptrSearchIdx = &blocks_D[searchIdx * blockSizes];
 
-				float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
-				FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+				if (BM_muMax > (blocksMean_D[offInAllBlk] / blocksMean_D[searchIdx]) > BM_muMin && BM_deltaMax > (blocksVar_D[offInAllBlk] / blocksVar_D[searchIdx]) > BM_deltaMin)
+				{
+					float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
+					FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+				}
 			}
 		}
+		//if (x_id == 0 && y_id == 252)
+		//{
+		//	for (int i = 0; i < similarBlkNum; i++)
+		//	{
+		//		printf("x_id = %d, y_id = %d, posIdx_D[%d] = %d, weiIdx_D[%d] = %f\n", x_id, y_id, i, posIdx_D[offInCentralBlk * similarBlkNum + i], i, weiIdx_D[offInCentralBlk * similarBlkNum + i]);
+		//	}
+		//}
 	}
 }
 
@@ -104,12 +142,14 @@ __global__ void BlockMatching_R(float *blocks_D, int *leftUpRow_D, int *leftUpCo
 * 输入：blocks_D 提取的块，一行为一个块
 * 输入：leftUpRow_D 每个中心块的行起始坐标
 * 输入：leftUpCol_D 每个中心块的列起始坐标
+* 输入：blocksMean_D 每个块的均值
+* 输入：blocksVar_D 每个块的方差
 * 输出：posIdx_D 相似块的位置
 * 输出：weiIdx_D 相似块的权重
 * 输入：rowNum 中心块的行数
 * 输入：colNum 中心块的列数
 */
-__global__ void BlockMatching_S(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
+__global__ void BlockMatching_S(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, float *blocksMean_D, float *blocksVar_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
 {
 	int x_id = blockDim.x * blockIdx.x + threadIdx.x; // 列坐标
 	int y_id = blockDim.y * blockIdx.y + threadIdx.y; // 行坐标
@@ -134,8 +174,11 @@ __global__ void BlockMatching_S(float *blocks_D, int *leftUpRow_D, int *leftUpCo
 					searchIdx = currRow * (imCol - blockR + 1) + currCol; // 按行优先
 					float *ptrSearchIdx = &blocks_D[searchIdx * blockSizes];
 
-					float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
-					FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+					if (BM_muMax >(blocksMean_D[offInAllBlk] / blocksMean_D[searchIdx]) > BM_muMin && BM_deltaMax >(blocksVar_D[offInAllBlk] / blocksVar_D[searchIdx]) > BM_deltaMin)
+					{
+						float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
+						FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+					}
 				}
 			}
 		}
@@ -152,12 +195,14 @@ __global__ void BlockMatching_S(float *blocks_D, int *leftUpRow_D, int *leftUpCo
 * 输入：rmax_D 搜索窗的行最大坐标
 * 输入：cmin_D 搜索窗的列最小坐标
 * 输入：cmax_D 搜索窗的列最大坐标
+* 输入：blocksMean_D 每个块的均值
+* 输入：blocksVar_D 每个块的方差
 * 输出：posIdx_D 相似块的位置
 * 输出：weiIdx_D 相似块的权重
 * 输入：rowNum 中心块的行数
 * 输入：colNum 中心块的列数
 */
-__global__ void BlockMatching_RS(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, int *rmin_D, int *rmax_D, int *cmin_D, int *cmax_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
+__global__ void BlockMatching_RS(float *blocks_D, int *leftUpRow_D, int *leftUpCol_D, int *rmin_D, int *rmax_D, int *cmin_D, int *cmax_D, float *blocksMean_D, float *blocksVar_D, int *posIdx_D, float *weiIdx_D, int rowNum, int colNum)
 {
 	int x_id = blockDim.x * blockIdx.x + threadIdx.x; // 列坐标
 	int y_id = blockDim.y * blockIdx.y + threadIdx.y; // 行坐标
@@ -177,9 +222,11 @@ __global__ void BlockMatching_RS(float *blocks_D, int *leftUpRow_D, int *leftUpC
 			{
 				searchIdx = i * (imCol - blockR + 1) + j; // 按行优先
 				float *ptrSearchIdx = &blocks_D[searchIdx * blockSizes];
-
-				float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
-				FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+				if (BM_muMax > (blocksMean_D[offInAllBlk] / blocksMean_D[searchIdx]) > BM_muMin && BM_deltaMax > (blocksVar_D[offInAllBlk] / blocksVar_D[searchIdx]) > BM_deltaMin)
+				{
+					float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
+					FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+				}
 			}
 		}
 
@@ -195,8 +242,11 @@ __global__ void BlockMatching_RS(float *blocks_D, int *leftUpRow_D, int *leftUpC
 					searchIdx = currRow * (imCol - blockR + 1) + currCol; // 按行优先
 					float *ptrSearchIdx = &blocks_D[searchIdx * blockSizes];
 
-					float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
-					FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+					if (BM_muMax >(blocksMean_D[offInAllBlk] / blocksMean_D[searchIdx]) > BM_muMin && BM_deltaMax >(blocksVar_D[offInAllBlk] / blocksVar_D[searchIdx]) > BM_deltaMin)
+					{
+						float dist = EuclidDistance(ptrCenter, ptrSearchIdx, blockSizes);
+						FindSimilarBlocks(&posIdx_D[offInCentralBlk * similarBlkNum], &weiIdx_D[offInCentralBlk * similarBlkNum], dist / float(blockSizes), searchIdx);
+					}
 				}
 			}
 		}
@@ -220,12 +270,13 @@ __global__ void BM_Calculate_Weight(float *weiIdx_D, int rowNum, int colNum)
 		float *currBlk = &weiIdx_D[x_id * similarBlkNum];
 		float sum = 1e-15;
 		
-		if (x_id == 102 * colNum + 245)
+		if (x_id == 0 * colNum + 252)
 		{
 			for (int i = 0; i < similarBlkNum; i++)
 			{
 				printf("x_id = %d, sum = %f, weiIdx_D[%d] = %f\n", x_id, sum, i, weiIdx_D[x_id * similarBlkNum + i]);
 			}
+			printf("\n");
 		}
 
 		/* 高斯加权 并 读入共享内存*/
@@ -234,7 +285,6 @@ __global__ void BM_Calculate_Weight(float *weiIdx_D, int rowNum, int colNum)
 			sData[threadIdx.x][i] = exp(-currBlk[i] / BM_hp);
 		}
 
-		//sData[threadIdx.x][0] = sData[threadIdx.x][1];
 		__syncthreads();
 
 		/* 求和 */
@@ -243,13 +293,14 @@ __global__ void BM_Calculate_Weight(float *weiIdx_D, int rowNum, int colNum)
 			sum += sData[threadIdx.x][i];
 		}
 		__syncthreads();
+
 		/* 量化 */
 		for (int i = 0; i < similarBlkNum; i++)
 		{
 			currBlk[i] = sData[threadIdx.x][i] / sum;
 		}
 
-		if (x_id == 102 * colNum + 245)
+		if (x_id == 0 * colNum + 252)
 		{
 			for (int i = 0; i < similarBlkNum; i++)
 			{

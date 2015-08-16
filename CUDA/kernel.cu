@@ -10,6 +10,7 @@
 
 #include "SetSearchWinCoordinate.h"
 #include "DivideBlock3D.h"
+#include "CalculateMeanVar.h"
 #include "BlockMatching.h"
 
 #include <iostream>
@@ -47,6 +48,10 @@ void CUDAmain(float *im_H)
 	cudaMalloc((void**)&blocks_D, allBlockNum * blockSizes * sizeof(float));
 	cudaMemset(blocks_D, 0, allBlockNum * blockSizes * sizeof(float));
 	
+	float *blocksMean_D, *blocksVar_D;
+	cudaMalloc((void**)&blocksMean_D, allBlockNum * sizeof(float));
+	cudaMalloc((void**)&blocksVar_D, allBlockNum * sizeof(float));
+
 	int *leftUpRow_D, *leftUpCol_D;
 	cudaMalloc((void**)&leftUpRow_D, N1 * sizeof(int));
 	cudaMalloc((void**)&leftUpCol_D, M1 * sizeof(int));
@@ -82,6 +87,7 @@ void CUDAmain(float *im_H)
 	dim3 dimGrid2D_N_M((M + dimBlock2D.x - 1) / dimBlock2D.x, (N + dimBlock2D.y - 1) / dimBlock2D.y);
 	dim3 dimGrid2D_N1_M1((M1 + dimBlock2D.x - 1) / dimBlock2D.x, (N1 + dimBlock2D.y - 1) / dimBlock2D.y);
 	dim3 dimGrid1D_N1M1((N1 * M1 + dimBlock1D.x - 1) / dimBlock1D.x);
+	dim3 dimGrid1D_NM((N * M + dimBlock1D.x - 1) / dimBlock1D.x);
 
 
 	/* 记录时间 */
@@ -126,15 +132,35 @@ void CUDAmain(float *im_H)
 	std::cout << "DivideBlock3D 的时间为：" << elaspsedTime << "ms." << std::endl;
 
 	/*****************************************************************************************************************************************************/
+
 	/* 记录时间 */
 	elaspsedTime = 0.0f;
 	cudaEventCreate(&start_GPU);
 	cudaEventCreate(&end_GPU);
 	cudaEventRecord(start_GPU, 0);
 
-	//BlockMatching_R<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, rmin_D, rmax_D, cmin_D, cmax_D, posIdx_D, weiIdx_D, N1, M1);
-	BlockMatching_S<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, posIdx_D, weiIdx_D, N1, M1);
-	//BlockMatching_RS<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, rmin_D, rmax_D, cmin_D, cmax_D, posIdx_D, weiIdx_D, N1, M1);
+	BM_Calculate_Mean_Var<<<dimGrid1D_NM, dimBlock1D>>>(blocks_D, blocksMean_D, blocksVar_D, N, M);
+
+	/* 计时结束 */
+	cudaEventRecord(end_GPU, 0);
+	cudaEventSynchronize(end_GPU);
+	cudaEventElapsedTime(&elaspsedTime, start_GPU, end_GPU);
+
+	/* 打印信息 */
+	std::cout << "BM_Calculate_Mean_Var 的时间为：" << elaspsedTime << "ms." << std::endl;
+
+	/*****************************************************************************************************************************************************/
+	/* 记录时间 */
+	elaspsedTime = 0.0f;
+	cudaEventCreate(&start_GPU);
+	cudaEventCreate(&end_GPU);
+	cudaEventRecord(start_GPU, 0);
+
+	BM_Init_WeightAndPos<<<dimGrid2D_N1_M1, dimBlock2D>>>(posIdx_D, weiIdx_D, N1, M1);
+
+	BlockMatching_R<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, rmin_D, rmax_D, cmin_D, cmax_D, blocksMean_D, blocksVar_D, posIdx_D, weiIdx_D, N1, M1);
+	//BlockMatching_S<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, blocksMean_D, blocksVar_D, posIdx_D, weiIdx_D, N1, M1);
+	//BlockMatching_RS<<<dimGrid2D_N1_M1, dimBlock2D>>>(blocks_D, leftUpRow_D, leftUpCol_D, rmin_D, rmax_D, cmin_D, cmax_D, blocksMean_D, blocksVar_D, posIdx_D, weiIdx_D, N1, M1);
 
 	/* 计时结束 */
 	cudaEventRecord(end_GPU, 0);
